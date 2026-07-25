@@ -3,7 +3,18 @@
 // externe), donc compatible 100% avec le runtime Cloudflare Workers.
 // ============================================================
 
+// Le runtime Cloudflare Workers plafonne PBKDF2 à 100 000 itérations.
 const PBKDF2_ITERATIONS = 100_000;
+
+// Limites anti-DoS : empêche d'envoyer un mot de passe/email énorme pour
+// faire tourner PBKDF2 sur une entrée massive (coût CPU) ou saturer la DB.
+export const MAX_EMAIL_LENGTH = 254;
+export const MAX_PASSWORD_LENGTH = 128;
+
+// Hash factice au format valide, utilisé pour égaliser le temps de réponse
+// de /auth/login quand l'utilisateur n'existe pas (anti-timing-attack).
+// Le coût PBKDF2 est le même que pour un vrai hash ; seul le résultat diffère.
+export const DUMMY_PASSWORD_HASH = `pbkdf2$${PBKDF2_ITERATIONS}$${"00".repeat(16)}$${"00".repeat(32)}`;
 
 function toHex(buf: ArrayBuffer | Uint8Array): string {
   const bytes = buf instanceof Uint8Array ? buf : new Uint8Array(buf);
@@ -70,10 +81,49 @@ export function isPasswordStrongEnough(password: string): boolean {
   return (
     typeof password === "string" &&
     password.length >= 10 &&
+    password.length <= MAX_PASSWORD_LENGTH &&
     /[a-z]/.test(password) &&
     /[A-Z]/.test(password) &&
     /[0-9]/.test(password)
   );
+}
+
+export function isValidEmailFormat(email: string): boolean {
+  return (
+    typeof email === "string" &&
+    email.length > 0 &&
+    email.length <= MAX_EMAIL_LENGTH &&
+    /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)
+  );
+}
+
+// ---------------- Nom d'utilisateur ----------------
+
+export const MIN_USERNAME_LENGTH = 3;
+export const MAX_USERNAME_LENGTH = 32;
+export const MAX_AVATAR_URL_LENGTH = 2048;
+
+/** Lettres, chiffres, tiret et underscore uniquement, 3 à 32 caractères. */
+export function isValidUsername(username: string): boolean {
+  return (
+    typeof username === "string" &&
+    new RegExp(`^[a-zA-Z0-9_-]{${MIN_USERNAME_LENGTH},${MAX_USERNAME_LENGTH}}$`).test(username)
+  );
+}
+
+/** Version normalisée (minuscules) utilisée pour garantir l'unicité et le login par pseudo. */
+export function normalizeUsername(username: string): string {
+  return username.trim().toLowerCase();
+}
+
+export function isValidAvatarUrl(url: string): boolean {
+  if (typeof url !== "string" || url.length === 0 || url.length > MAX_AVATAR_URL_LENGTH) return false;
+  try {
+    const parsed = new URL(url);
+    return parsed.protocol === "https:" || parsed.protocol === "http:";
+  } catch {
+    return false;
+  }
 }
 
 // ---------------- Tokens opaques (net-token, 64 caractères) ----------------
@@ -184,8 +234,30 @@ export async function generateTotp(secretBase32: string, timeStepSeconds = 30): 
 }
 
 /**
- * Vérifie un code TOTP en tolérant une fenêtre de +/- 1 pas de temps
- * (pour compenser une légère désynchronisation d'horloge côté client).
+ * Recherche le compteur TOTP correspondant au code fourni, en tolérant une
+ * fenêtre de +/- 1 pas de temps (dérive d'horloge). Retourne le compteur
+ * exact si trouvé (à utiliser pour l'anti-rejeu), sinon null.
+ */
+export async function findTotpCounter(
+  secretBase32: string,
+  token: string,
+  timeStepSeconds = 30,
+  window = 1
+): Promise<number | null> {
+  if (!/^\d{6}$/.test(token)) return null;
+  const counter = Math.floor(Date.now() / 1000 / timeStepSeconds);
+  for (let errorWindow = -window; errorWindow <= window; errorWindow++) {
+    const candidate = await hotp(secretBase32, counter + errorWindow);
+    if (timingSafeEqual(candidate, token)) return counter + errorWindow;
+  }
+  return null;
+}
+
+/**
+ * Vérifie un code TOTP SANS protection anti-rejeu (utilisable seulement
+ * pour des vérifications ponctuelles hors flux d'authentification, ex:
+ * tests). Préférer `findTotpCounter` + comparaison au dernier compteur
+ * consommé (voir `verifyAndConsumeTotp` dans db.ts) partout ailleurs.
  */
 export async function verifyTotp(
   secretBase32: string,
@@ -193,13 +265,7 @@ export async function verifyTotp(
   timeStepSeconds = 30,
   window = 1
 ): Promise<boolean> {
-  if (!/^\d{6}$/.test(token)) return false;
-  const counter = Math.floor(Date.now() / 1000 / timeStepSeconds);
-  for (let errorWindow = -window; errorWindow <= window; errorWindow++) {
-    const candidate = await hotp(secretBase32, counter + errorWindow);
-    if (timingSafeEqual(candidate, token)) return true;
-  }
-  return false;
+  return (await findTotpCounter(secretBase32, token, timeStepSeconds, window)) !== null;
 }
 
 export function buildOtpAuthUri(secretBase32: string, email: string, issuer = "VibraNet"): string {
