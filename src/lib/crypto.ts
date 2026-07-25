@@ -3,7 +3,7 @@
 // externe), donc compatible 100% avec le runtime Cloudflare Workers.
 // ============================================================
 
-const PBKDF2_ITERATIONS = 210_000;
+const PBKDF2_ITERATIONS = 100_000;
 
 function toHex(buf: ArrayBuffer | Uint8Array): string {
   const bytes = buf instanceof Uint8Array ? buf : new Uint8Array(buf);
