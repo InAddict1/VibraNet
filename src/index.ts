@@ -38,6 +38,19 @@ app.notFound((c) => c.json({ error: "not_found", message: "Endpoint inconnu." },
 
 app.onError((err, c) => {
   console.error("Erreur non gérée:", err);
+
+  // ⚠️ DEBUG TEMPORAIRE — à retirer une fois le problème résolu.
+  if (c.req.header("x-debug") === "vibranet-debug-2026") {
+    return c.json(
+      {
+        error: "internal_error",
+        debug_message: err instanceof Error ? err.message : String(err),
+        debug_stack: err instanceof Error ? err.stack : null,
+      },
+      500
+    );
+  }
+
   return c.json({ error: "internal_error", message: "Une erreur interne est survenue." }, 500);
 });
 
