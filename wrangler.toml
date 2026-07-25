@@ -10,7 +10,7 @@ database_id = "vibranet-db"
 
 [[kv_namespaces]]
 binding = "RATE_LIMIT"
-id = "VibraNet-KV"
+id = "f833646baaca43d1b762d7a97f1b7e46
 
 [vars]
 ENVIRONMENT = "production"
