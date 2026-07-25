@@ -1,6 +1,6 @@
 import { Hono } from "hono";
 import type { AppContext } from "../middleware";
-import { checkRateLimit, resetRateLimit, requireSession } from "../middleware";
+import { checkRateLimit, resetRateLimit, requireSession, setSessionCookie, clearSessionCookie } from "../middleware";
 import { getUserByEmail, getUserByUsername, getUserByIdentifier, nowUnix, uuid, verifyAndConsumeTotp } from "../db";
 import {
   hashPassword,
@@ -14,7 +14,6 @@ import {
   hashToken,
 } from "../lib/crypto";
 import { signShortLivedJwt, verifyShortLivedJwt } from "../lib/jwt";
-import { setSessionCookie, clearSessionCookie } from "../lib/session-cookie";
 
 export const authRoutes = new Hono<AppContext>();
 
@@ -157,8 +156,9 @@ authRoutes.post("/login", async (c) => {
   }
 
   // --- Pas de 2FA : session directe ---
-  await createSession(c, user.id, ip);
-  return c.json({ requires_2fa: false, message: "Connecté." });
+  const netToken = await createSession(c, user.id, ip);
+  setSessionCookie(c, netToken, SESSION_DURATION_SECONDS);
+  return c.json({ requires_2fa: false, net_token: netToken });
 });
 
 // ---------------- POST /auth/login/2fa ----------------
@@ -202,8 +202,9 @@ authRoutes.post("/login/2fa", async (c) => {
     return c.json({ error: "unauthorized", message: "Code invalide." }, 401);
   }
 
-  await createSession(c, user.id, ip);
-  return c.json({ message: "Connecté." });
+  const netToken = await createSession(c, user.id, ip);
+  setSessionCookie(c, netToken, SESSION_DURATION_SECONDS);
+  return c.json({ net_token: netToken });
 });
 
 // ---------------- POST /auth/logout ----------------
@@ -226,9 +227,6 @@ async function createSession(c: any, userId: string, ip: string): Promise<string
   )
     .bind(tokenHash, userId, ip, c.req.header("User-Agent") ?? null, ts, ts + SESSION_DURATION_SECONDS)
     .run();
-  // Le token brut ne quitte plus jamais le serveur via le JSON de réponse :
-  // il part uniquement dans un cookie httpOnly (voir lib/session-cookie.ts).
-  setSessionCookie(c, netToken, SESSION_DURATION_SECONDS);
   return netToken;
 }
 
