@@ -6,6 +6,7 @@ export interface Env {
   JWT_SECRET: string;
   TOKEN_PEPPER: string;
   ENVIRONMENT: string;
+  ALLOWED_ORIGIN: string;
 }
 
 export interface UserRow {
@@ -108,18 +109,17 @@ export function toPublicUser(user: UserRow) {
 }
 
 /**
- * Vue "moi" : exactement ce que le profil connecté doit récupérer —
- * nom d'utilisateur, ID, e-mail, avatar. Rien d'autre (pas de permissions,
- * pas de statut 2FA/ban ici). Le token de session lui-même n'est plus
- * jamais renvoyé au JS : il vit uniquement dans le cookie httpOnly
- * `vn_session` (voir lib/session-cookie.ts).
+ * Vue "moi" : exactement ce que le profil connecté doit récupérer après
+ * connexion — nom d'utilisateur, token de session, ID, e-mail, avatar.
+ * Rien d'autre (pas de permissions, pas de statut 2FA/ban ici).
  */
-export function toMeView(user: UserRow) {
+export function toMeView(user: UserRow, netToken: string) {
   return {
     id: user.id,
     username: user.username,
     email: user.email,
     avatar_url: user.avatar_url,
+    net_token: netToken,
   };
 }
 
