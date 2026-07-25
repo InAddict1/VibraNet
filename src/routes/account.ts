@@ -1,7 +1,7 @@
 import { Hono } from "hono";
 import type { AppContext } from "../middleware";
 import { requireSession } from "../middleware";
-import { nowUnix, uuid } from "../db";
+import { nowUnix, uuid, verifyAndConsumeTotp, getUserByUsername, toMeView } from "../db";
 import {
   hashPassword,
   verifyPassword,
@@ -9,8 +9,10 @@ import {
   hashToken,
   generateTotpSecret,
   buildOtpAuthUri,
-  verifyTotp,
   generateRecoveryCode,
+  isValidUsername,
+  normalizeUsername,
+  isValidAvatarUrl,
 } from "../lib/crypto";
 import { signShortLivedJwt, verifyShortLivedJwt } from "../lib/jwt";
 import { tryConsumeRecoveryCode } from "./auth";
@@ -21,6 +23,76 @@ accountRoutes.use("*", requireSession);
 const RECOVERY_TOKEN_TTL = 60 * 5; // 5 minutes
 const RECOVERY_CODES_COUNT = 10;
 
+// ---------------- GET /account/me ----------------
+// Retourne exactement : id, username, email, avatar_url, net_token. Rien d'autre
+// (pas de permissions, pas de statut interne) — c'est la vue "profil connecté".
+accountRoutes.get("/me", async (c) => {
+  const user = c.get("user");
+  const netToken = c.req.header("net-token")!; // déjà validé par requireSession
+  return c.json(toMeView(user, netToken));
+});
+
+// ---------------- PATCH /account/profile ----------------
+// Modifie son propre pseudo et/ou son avatar. Le pseudo doit rester unique
+// (insensible à la casse) ; aucun autre champ ne peut être modifié ici.
+accountRoutes.patch("/profile", async (c) => {
+  const user = c.get("user");
+  const body = await c.req.json().catch(() => null);
+  const username = typeof body?.username === "string" ? body.username.trim() : undefined;
+  const avatarUrl = body?.avatar_url === null ? null : typeof body?.avatar_url === "string" ? body.avatar_url.trim() : undefined;
+
+  if (username === undefined && avatarUrl === undefined) {
+    return c.json({ error: "bad_request", message: "Rien à mettre à jour (username et/ou avatar_url)." }, 400);
+  }
+
+  let newUsername = user.username;
+  let newUsernameNormalized = user.username_normalized;
+  if (username !== undefined) {
+    if (!isValidUsername(username)) {
+      return c.json(
+        { error: "bad_request", message: "Nom d'utilisateur invalide (3 à 32 caractères : lettres, chiffres, _ ou -)." },
+        400
+      );
+    }
+    const normalized = normalizeUsername(username);
+    if (normalized !== user.username_normalized) {
+      const existing = await getUserByUsername(c.env.DB, normalized);
+      if (existing) {
+        return c.json({ error: "conflict", message: "Ce nom d'utilisateur est déjà pris." }, 409);
+      }
+    }
+    newUsername = username;
+    newUsernameNormalized = normalized;
+  }
+
+  let newAvatarUrl = user.avatar_url;
+  if (avatarUrl !== undefined) {
+    if (avatarUrl !== null && !isValidAvatarUrl(avatarUrl)) {
+      return c.json({ error: "bad_request", message: "URL d'avatar invalide (http/https, 2048 caractères max)." }, 400);
+    }
+    newAvatarUrl = avatarUrl;
+  }
+
+  try {
+    await c.env.DB.prepare(
+      "UPDATE users SET username = ?, username_normalized = ?, avatar_url = ?, updated_at = ? WHERE id = ?"
+    )
+      .bind(newUsername, newUsernameNormalized, newAvatarUrl, nowUnix(), user.id)
+      .run();
+  } catch (err: any) {
+    if (String(err?.message ?? "").includes("UNIQUE")) {
+      return c.json({ error: "conflict", message: "Ce nom d'utilisateur est déjà pris." }, 409);
+    }
+    throw err;
+  }
+
+  return c.json({
+    message: "Profil mis à jour.",
+    username: newUsername,
+    avatar_url: newAvatarUrl,
+  });
+});
+
 // ---------------- POST /account/password ----------------
 accountRoutes.post("/password", async (c) => {
   const user = c.get("user");
@@ -30,6 +102,9 @@ accountRoutes.post("/password", async (c) => {
 
   if (!currentPassword || !newPassword) {
     return c.json({ error: "bad_request", message: "current_password et new_password requis." }, 400);
+  }
+  if (currentPassword.length > 128 || newPassword.length > 128) {
+    return c.json({ error: "bad_request", message: "Mot de passe trop long (128 caractères max)." }, 400);
   }
   if (!(await verifyPassword(currentPassword, user.password_hash))) {
     return c.json({ error: "unauthorized", message: "Mot de passe actuel incorrect." }, 401);
@@ -61,7 +136,7 @@ accountRoutes.post("/oauth2/enable", async (c) => {
   const body = await c.req.json().catch(() => null);
   const password = typeof body?.password === "string" ? body.password : null;
 
-  if (!password || !(await verifyPassword(password, user.password_hash))) {
+  if (!password || password.length > 128 || !(await verifyPassword(password, user.password_hash))) {
     return c.json({ error: "unauthorized", message: "Mot de passe incorrect." }, 401);
   }
   if (user.oauth2_enabled) {
@@ -90,7 +165,7 @@ accountRoutes.post("/oauth2/confirm", async (c) => {
   if (!user.oauth2_secret_pending) {
     return c.json({ error: "bad_request", message: "Aucune activation 2FA en attente." }, 400);
   }
-  if (!code || !(await verifyTotp(user.oauth2_secret_pending, code))) {
+  if (!code || !(await verifyAndConsumeTotp(c.env.DB, user.id, user.oauth2_secret_pending, code))) {
     return c.json({ error: "unauthorized", message: "Code invalide." }, 401);
   }
 
@@ -118,7 +193,7 @@ accountRoutes.post("/oauth2/disable", async (c) => {
   const password = typeof body?.password === "string" ? body.password : null;
   const code = typeof body?.code === "string" ? body.code.trim() : null;
 
-  if (!password || !(await verifyPassword(password, user.password_hash))) {
+  if (!password || password.length > 128 || !(await verifyPassword(password, user.password_hash))) {
     return c.json({ error: "unauthorized", message: "Mot de passe incorrect." }, 401);
   }
   if (!user.oauth2_enabled || !user.oauth2_secret) {
@@ -127,7 +202,7 @@ accountRoutes.post("/oauth2/disable", async (c) => {
 
   let valid = false;
   if (code && /^\d{6}$/.test(code)) {
-    valid = await verifyTotp(user.oauth2_secret, code);
+    valid = await verifyAndConsumeTotp(c.env.DB, user.id, user.oauth2_secret, code);
   } else if (code) {
     valid = await tryConsumeRecoveryCode(c.env.DB, c.env.TOKEN_PEPPER, user.id, code);
   }
@@ -152,7 +227,7 @@ accountRoutes.post("/oauth2/recovery-codes/request", async (c) => {
   const body = await c.req.json().catch(() => null);
   const password = typeof body?.password === "string" ? body.password : null;
 
-  if (!password || !(await verifyPassword(password, user.password_hash))) {
+  if (!password || password.length > 128 || !(await verifyPassword(password, user.password_hash))) {
     return c.json({ error: "unauthorized", message: "Mot de passe incorrect." }, 401);
   }
   if (!user.oauth2_enabled) {
@@ -213,4 +288,4 @@ async function regenerateRecoveryCodes(
   }
   await db.batch(inserts);
   return plainCodes;
-}
+    }
