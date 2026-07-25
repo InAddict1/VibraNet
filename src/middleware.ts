@@ -1,4 +1,5 @@
-t } from "hono";import type { Env, UserRow } from "./db";
+import type { Context, Next } from "hono";
+import type { Env, UserRow } from "./db";
 import { getUserById, nowUnix } from "./db";
 import { hashToken } from "./lib/crypto";
 import { hasPermission, type PermissionBit } from "./permissions";
@@ -110,4 +111,4 @@ export async function checkRateLimit(
 
 export async function resetRateLimit(kv: KVNamespace, identifier: string): Promise<void> {
   await kv.delete(`ratelimit:${identifier}`);
-  }
+}
