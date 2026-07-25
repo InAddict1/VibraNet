@@ -1,4 +1,19 @@
 {
-  "name": "start-fullstack",
-  "version": "1.0.0"
+  "name": "vibranet-api",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "db:init": "wrangler d1 execute vibranet-db --file=./schema.sql"
+  },
+  "dependencies": {
+    "hono": "^4.6.0",
+    "jose": "^5.9.0"
+  },
+  "devDependencies": {
+    "wrangler": "^3.90.0",
+    "typescript": "^5.6.0"
+  }
 }
