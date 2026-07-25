@@ -14,6 +14,7 @@ import {
   hashToken,
 } from "../lib/crypto";
 import { signShortLivedJwt, verifyShortLivedJwt } from "../lib/jwt";
+import { setSessionCookie, clearSessionCookie } from "../lib/session-cookie";
 
 export const authRoutes = new Hono<AppContext>();
 
@@ -156,8 +157,8 @@ authRoutes.post("/login", async (c) => {
   }
 
   // --- Pas de 2FA : session directe ---
-  const netToken = await createSession(c, user.id, ip);
-  return c.json({ requires_2fa: false, net_token: netToken });
+  await createSession(c, user.id, ip);
+  return c.json({ requires_2fa: false, message: "Connecté." });
 });
 
 // ---------------- POST /auth/login/2fa ----------------
@@ -201,14 +202,15 @@ authRoutes.post("/login/2fa", async (c) => {
     return c.json({ error: "unauthorized", message: "Code invalide." }, 401);
   }
 
-  const netToken = await createSession(c, user.id, ip);
-  return c.json({ net_token: netToken });
+  await createSession(c, user.id, ip);
+  return c.json({ message: "Connecté." });
 });
 
 // ---------------- POST /auth/logout ----------------
 authRoutes.post("/logout", requireSession, async (c) => {
   const tokenHash = c.get("tokenHash");
   await c.env.DB.prepare("DELETE FROM sessions WHERE token_hash = ?").bind(tokenHash).run();
+  clearSessionCookie(c);
   return c.json({ message: "Déconnecté." });
 });
 
@@ -224,6 +226,9 @@ async function createSession(c: any, userId: string, ip: string): Promise<string
   )
     .bind(tokenHash, userId, ip, c.req.header("User-Agent") ?? null, ts, ts + SESSION_DURATION_SECONDS)
     .run();
+  // Le token brut ne quitte plus jamais le serveur via le JSON de réponse :
+  // il part uniquement dans un cookie httpOnly (voir lib/session-cookie.ts).
+  setSessionCookie(c, netToken, SESSION_DURATION_SECONDS);
   return netToken;
 }
 
