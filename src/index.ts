@@ -9,20 +9,19 @@ import { adminRoutes } from "./routes/admin";
 
 const app = new Hono<AppContext>();
 
-// ---------------- Sécurité globale ----------------
 app.use("*", secureHeaders());
 app.use(
   "*",
   cors({
     origin: (origin) => origin ?? "vibranet.codeberg.page",
-    allowHeaders: ["Content-Type", "net-token"],
+    credentials: true, // requis pour que le navigateur envoie/accepte le cookie httpOnly cross-origin
+    allowHeaders: ["Content-Type"],
     allowMethods: ["GET", "POST", "DELETE", "OPTIONS"],
     maxAge: 600,
   })
 );
 app.use("*", ipBanGuard);
 
-// ---------------- Routes ----------------
 app.route("/auth", authRoutes);
 app.route("/account", accountRoutes);
 app.route("/admin", adminRoutes);
@@ -35,5 +34,7 @@ app.onError((err, c) => {
   console.error("Erreur non gérée:", err);
   return c.json({ error: "internal_error", message: "Une erreur interne est survenue." }, 500);
 });
+
+export default app;});
 
 export default app;
