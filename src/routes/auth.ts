@@ -1,14 +1,17 @@
 import { Hono } from "hono";
 import type { AppContext } from "../middleware";
 import { checkRateLimit, resetRateLimit, requireSession } from "../middleware";
-import { getUserByEmail, nowUnix, uuid } from "../db";
+import { getUserByEmail, getUserByUsername, getUserByIdentifier, nowUnix, uuid, verifyAndConsumeTotp } from "../db";
 import {
   hashPassword,
   verifyPassword,
   isPasswordStrongEnough,
+  isValidEmailFormat,
+  isValidUsername,
+  normalizeUsername,
+  DUMMY_PASSWORD_HASH,
   generateNetToken,
   hashToken,
-  verifyTotp,
 } from "../lib/crypto";
 import { signShortLivedJwt, verifyShortLivedJwt } from "../lib/jwt";
 
@@ -21,63 +24,110 @@ const CHALLENGE_2FA_TTL = 60 * 5; // 5 minutes
 authRoutes.post("/register", async (c) => {
   const body = await c.req.json().catch(() => null);
   const email = typeof body?.email === "string" ? body.email.toLowerCase().trim() : null;
+  const username = typeof body?.username === "string" ? body.username.trim() : null;
   const password = typeof body?.password === "string" ? body.password : null;
+  const ip = c.req.header("CF-Connecting-IP") ?? "unknown";
 
-  if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+  // Anti-spam / anti-bourrage de comptes : limite par IP avant toute autre logique.
+  const rateOk = await checkRateLimit(c.env.RATE_LIMIT, `register-ip:${ip}`, 5, 3600);
+  if (!rateOk) {
+    return c.json({ error: "too_many_requests", message: "Trop de créations de compte, réessayez plus tard." }, 429);
+  }
+
+  if (!email || !isValidEmailFormat(email)) {
     return c.json({ error: "bad_request", message: "Adresse e-mail invalide." }, 400);
+  }
+  if (!username || !isValidUsername(username)) {
+    return c.json(
+      {
+        error: "bad_request",
+        message: "Nom d'utilisateur invalide (3 à 32 caractères : lettres, chiffres, _ ou -).",
+      },
+      400
+    );
   }
   if (!password || !isPasswordStrongEnough(password)) {
     return c.json(
       {
         error: "bad_request",
-        message: "Mot de passe trop faible (10 caractères min, majuscule, minuscule, chiffre).",
+        message: "Mot de passe invalide (10 à 128 caractères, majuscule, minuscule, chiffre).",
       },
       400
     );
   }
 
-  const existing = await getUserByEmail(c.env.DB, email);
-  if (existing) {
+  const existingEmail = await getUserByEmail(c.env.DB, email);
+  if (existingEmail) {
     return c.json({ error: "conflict", message: "Un compte existe déjà avec cet e-mail." }, 409);
+  }
+  const usernameNormalized = normalizeUsername(username);
+  const existingUsername = await getUserByUsername(c.env.DB, usernameNormalized);
+  if (existingUsername) {
+    return c.json({ error: "conflict", message: "Ce nom d'utilisateur est déjà pris." }, 409);
   }
 
   const id = uuid();
   const passwordHash = await hashPassword(password);
   const ts = nowUnix();
 
-  await c.env.DB.prepare(
-    `INSERT INTO users (id, email, password_hash, permissions, created_at, updated_at)
-     VALUES (?, ?, ?, 0, ?, ?)`
-  )
-    .bind(id, email, passwordHash, ts, ts)
-    .run();
+  try {
+    await c.env.DB.prepare(
+      `INSERT INTO users (id, email, username, username_normalized, password_hash, permissions, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, 0, ?, ?)`
+    )
+      .bind(id, email, username, usernameNormalized, passwordHash, ts, ts)
+      .run();
+  } catch (err: any) {
+    // Filet de sécurité en cas de double inscription simultanée (race condition)
+    if (String(err?.message ?? "").includes("UNIQUE")) {
+      return c.json({ error: "conflict", message: "E-mail ou nom d'utilisateur déjà pris." }, 409);
+    }
+    throw err;
+  }
 
-  return c.json({ id, email, message: "Compte créé. Vous pouvez maintenant vous connecter." }, 201);
+  return c.json({ id, email, username, message: "Compte créé. Vous pouvez maintenant vous connecter." }, 201);
 });
 
 // ---------------- POST /auth/login ----------------
 authRoutes.post("/login", async (c) => {
   const body = await c.req.json().catch(() => null);
-  const email = typeof body?.email === "string" ? body.email.toLowerCase().trim() : null;
+  // "identifier" accepte indifféremment un e-mail ou un nom d'utilisateur.
+  // On garde une compatibilité avec un éventuel champ "email" existant côté front.
+  const rawIdentifier =
+    typeof body?.identifier === "string"
+      ? body.identifier
+      : typeof body?.email === "string"
+      ? body.email
+      : null;
+  const identifier = rawIdentifier ? rawIdentifier.trim() : null;
   const password = typeof body?.password === "string" ? body.password : null;
   const ip = c.req.header("CF-Connecting-IP") ?? "unknown";
 
-  if (!email || !password) {
-    return c.json({ error: "bad_request", message: "E-mail et mot de passe requis." }, 400);
+  if (!identifier || !password) {
+    return c.json({ error: "bad_request", message: "identifier (e-mail ou pseudo) et mot de passe requis." }, 400);
+  }
+  if (identifier.length > 254 || password.length > 128) {
+    return c.json({ error: "bad_request", message: "Identifiants invalides." }, 400);
   }
 
-  const rateOk = await checkRateLimit(c.env.RATE_LIMIT, `login:${email}`, 8, 300);
+  const rateOk = await checkRateLimit(c.env.RATE_LIMIT, `login:${identifier.toLowerCase()}`, 8, 300);
   const rateOkIp = await checkRateLimit(c.env.RATE_LIMIT, `login-ip:${ip}`, 20, 300);
   if (!rateOk || !rateOkIp) {
     return c.json({ error: "too_many_requests", message: "Trop de tentatives, réessayez plus tard." }, 429);
   }
 
-  const user = await getUserByEmail(c.env.DB, email);
-  // Réponse volontairement identique si l'email n'existe pas ou si le mdp est faux (anti-enumération)
+  const user = await getUserByIdentifier(c.env.DB, identifier);
+  // Réponse volontairement identique si l'identifiant n'existe pas ou si le mdp est faux (anti-enumération)
   const invalidCreds = () =>
     c.json({ error: "unauthorized", message: "Identifiants invalides." }, 401);
 
-  if (!user) return invalidCreds();
+  if (!user) {
+    // Anti-timing-attack : on fait quand même tourner un PBKDF2 de même coût
+    // que pour un vrai compte, pour que le temps de réponse ne révèle pas
+    // si l'identifiant existe ou non.
+    await verifyPassword(password, DUMMY_PASSWORD_HASH);
+    return invalidCreds();
+  }
 
   const validPassword = await verifyPassword(password, user.password_hash);
   if (!validPassword) return invalidCreds();
@@ -92,7 +142,7 @@ authRoutes.post("/login", async (c) => {
     );
   }
 
-  await resetRateLimit(c.env.RATE_LIMIT, `login:${email}`);
+  await resetRateLimit(c.env.RATE_LIMIT, `login:${identifier.toLowerCase()}`);
 
   // --- Double authentification activée : on ne délivre pas de session
   // tout de suite, on renvoie un challenge JWT court à valider via /auth/login/2fa ---
@@ -141,7 +191,7 @@ authRoutes.post("/login/2fa", async (c) => {
 
   let valid = false;
   if (/^\d{6}$/.test(code)) {
-    valid = await verifyTotp(user.oauth2_secret, code);
+    valid = await verifyAndConsumeTotp(c.env.DB, user.id, user.oauth2_secret, code);
   } else {
     // Tentative avec un code de récupération
     valid = await tryConsumeRecoveryCode(c.env.DB, c.env.TOKEN_PEPPER, user.id, code);
