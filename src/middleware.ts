@@ -1,7 +1,9 @@
 import type { Context, Next } from "hono";
+import { getCookie } from "hono/cookie";
 import type { Env, UserRow } from "./db";
 import { getUserById, nowUnix } from "./db";
 import { hashToken } from "./lib/crypto";
+import { SESSION_COOKIE_NAME } from "./lib/session-cookie";
 import { hasPermission, type PermissionBit } from "./permissions";
 
 export type AppContext = { Bindings: Env; Variables: { user: UserRow; tokenHash: string } };
@@ -22,14 +24,16 @@ export async function ipBanGuard(c: Context<AppContext>, next: Next) {
 }
 
 /**
- * Exige un net-token valide (header `net-token`), résout la session en
- * base, vérifie qu'elle n'est pas expirée, et injecte l'utilisateur dans
- * le contexte (c.get("user")).
+ * Exige une session valide. Le token n'est plus lu depuis un header
+ * `net-token` envoyé par le JS du site, mais depuis le cookie httpOnly
+ * `vn_session` déposé par /auth/login (voir lib/session-cookie.ts) : le
+ * navigateur/WebView l'attache automatiquement, et le JS de la page ne peut
+ * ni le lire ni le falsifier.
  */
 export async function requireSession(c: Context<AppContext>, next: Next) {
-  const token = c.req.header("net-token");
+  const token = getCookie(c, SESSION_COOKIE_NAME);
   if (!token || token.length !== 64) {
-    return c.json({ error: "unauthorized", message: "Header net-token manquant ou invalide." }, 401);
+    return c.json({ error: "unauthorized", message: "Session manquante ou invalide." }, 401);
   }
 
   const tokenHash = await hashToken(token, c.env.TOKEN_PEPPER);
