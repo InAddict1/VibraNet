@@ -24,12 +24,12 @@ const RECOVERY_TOKEN_TTL = 60 * 5; // 5 minutes
 const RECOVERY_CODES_COUNT = 10;
 
 // ---------------- GET /account/me ----------------
-// Retourne exactement : id, username, email, avatar_url. Rien d'autre
-// (pas de permissions, pas de statut interne, pas le token de session —
-// il est dans le cookie httpOnly et n'a plus à transiter par le JS).
+// Retourne exactement : id, username, email, avatar_url, net_token. Rien d'autre
+// (pas de permissions, pas de statut interne) — c'est la vue "profil connecté".
 accountRoutes.get("/me", async (c) => {
   const user = c.get("user");
-  return c.json(toMeView(user));
+  const netToken = c.get("token"); // vient du header net-token OU du cookie, peu importe la source
+  return c.json(toMeView(user, netToken));
 });
 
 // ---------------- PATCH /account/profile ----------------
@@ -288,4 +288,4 @@ async function regenerateRecoveryCodes(
   }
   await db.batch(inserts);
   return plainCodes;
-                  }
+      }
