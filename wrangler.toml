@@ -1,3 +1,16 @@
-name = "vibranet"
-main = "src/index.js"
-compatibility_date = "2026-05-17"
+name = "vibranet-api"
+main = "src/index.ts"
+compatibility_date = "2026-07-01"
+compatibility_flags = ["nodejs_compat"]
+
+[[d1_databases]]
+binding = "DB"
+database_name = "VibraNet-DB"
+database_id = "vibranet-db"
+
+[[kv_namespaces]]
+binding = "RATE_LIMIT"
+id = "vibranet-kv"
+
+[vars]
+ENVIRONMENT = "production"
