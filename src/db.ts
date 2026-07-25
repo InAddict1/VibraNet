@@ -57,11 +57,21 @@ export async function getUserByUsername(db: D1Database, username: string): Promi
   return row ?? null;
 }
 
+/**
+ * Résout un utilisateur à partir d'un identifiant qui peut être soit une
+ * adresse e-mail, soit un nom d'utilisateur (détection automatique du format).
+ */
 export async function getUserByIdentifier(db: D1Database, identifier: string): Promise<UserRow | null> {
   const looksLikeEmail = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(identifier);
   return looksLikeEmail ? getUserByEmail(db, identifier) : getUserByUsername(db, identifier);
 }
 
+/**
+ * Vérifie un code TOTP et empêche son rejeu : si le compteur correspondant
+ * a déjà été consommé (ou est antérieur au dernier consommé), le code est
+ * refusé même s'il est mathématiquement valide. Met à jour oauth2_last_counter
+ * en base dès qu'un code est accepté.
+ */
 export async function verifyAndConsumeTotp(
   db: D1Database,
   userId: string,
@@ -84,6 +94,7 @@ export async function verifyAndConsumeTotp(
   return true;
 }
 
+/** Supprime les champs sensibles avant tout retour au client, quel qu'il soit. */
 export function toPublicUser(user: UserRow) {
   return {
     id: user.id,
@@ -96,16 +107,23 @@ export function toPublicUser(user: UserRow) {
   };
 }
 
-export function toMeView(user: UserRow, netToken: string) {
+/**
+ * Vue "moi" : exactement ce que le profil connecté doit récupérer —
+ * nom d'utilisateur, ID, e-mail, avatar. Rien d'autre (pas de permissions,
+ * pas de statut 2FA/ban ici). Le token de session lui-même n'est plus
+ * jamais renvoyé au JS : il vit uniquement dans le cookie httpOnly
+ * `vn_session` (voir lib/session-cookie.ts).
+ */
+export function toMeView(user: UserRow) {
   return {
     id: user.id,
     username: user.username,
     email: user.email,
     avatar_url: user.avatar_url,
-    net_token: netToken,
   };
 }
 
+/** Vue "admin" : toujours SANS password_hash, secrets 2FA, ni codes de récupération. */
 export function toAdminUserView(user: UserRow) {
   return {
     id: user.id,
