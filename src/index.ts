@@ -14,8 +14,7 @@ app.use("*", secureHeaders());
 app.use(
   "*",
   cors({
-    // ⚠️ À restreindre au(x) domaine(s) exact(s) de votre front-end en production
-    origin: (origin) => origin ?? "*",
+    origin: (origin) => origin ?? "vibranet.codeberg.page",
     allowHeaders: ["Content-Type", "net-token"],
     allowMethods: ["GET", "POST", "DELETE", "OPTIONS"],
     maxAge: 600,
