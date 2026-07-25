@@ -6,7 +6,7 @@ compatibility_flags = ["nodejs_compat"]
 [[d1_databases]]
 binding = "DB"
 database_name = "VibraNet-DB"
-database_id = "vibranet-db"
+database_id = "edf4ba6e-c403-410c-aa50-8229c7b03388"
 
 [[kv_namespaces]]
 binding = "RATE_LIMIT"
