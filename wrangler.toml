@@ -1,4 +1,4 @@
-name = "vibranet-api"
+name = "vibranet"
 main = "src/index.ts"
 compatibility_date = "2026-07-01"
 compatibility_flags = ["nodejs_compat"]
@@ -10,7 +10,7 @@ database_id = "vibranet-db"
 
 [[kv_namespaces]]
 binding = "RATE_LIMIT"
-id = "vibranet-kv"
+id = "VibraNet-KV"
 
 [vars]
 ENVIRONMENT = "production"
