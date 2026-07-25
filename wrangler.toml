@@ -15,3 +15,6 @@ id = "f833646baaca43d1b762d7a97f1b7e46"
 [vars]
 ENVIRONMENT = "production"
 ALLOWED_ORIGIN = "https://vibranet.codeberg.page"
+
+[observability]
+enabled = true
