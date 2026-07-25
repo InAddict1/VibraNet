@@ -1,12 +1,26 @@
 import { Hono } from "hono";
 import type { AppContext } from "../middleware";
 import { requireSession, requirePermission } from "../middleware";
-import { getUserById, nowUnix, toAdminUserView } from "../db";
-import { PERMISSIONS } from "../permissions";
-import { generateRandomPassword, hashPassword } from "../lib/crypto";
+import { getUserById, getUserByUsername, nowUnix, toAdminUserView, type UserRow } from "../db";
+import { PERMISSIONS, actorOutranks } from "../permissions";
+import { generateRandomPassword, hashPassword, isValidUsername, normalizeUsername, isValidAvatarUrl } from "../lib/crypto";
 
 export const adminRoutes = new Hono<AppContext>();
 adminRoutes.use("*", requireSession);
+
+/**
+ * Anti-escalade de privilèges : un admin ne peut agir (ban/timeout/suppression/
+ * reset mdp/désactivation 2FA) que sur une cible dont il couvre TOUTES les
+ * permissions. Empêche un admin "BAN_ACCOUNT only" de bannir un admin qui a
+ * en plus RESET_PASSWORDS ou ADMIN_VIBRANET, par exemple.
+ * Retourne une Response 403 si l'action doit être bloquée, sinon null.
+ */
+function denyIfOutranked(actor: UserRow, target: UserRow) {
+  if (!actorOutranks(actor.permissions, target.permissions)) {
+    return { error: "forbidden", message: "Vous ne pouvez pas agir sur un compte ayant des permissions égales ou supérieures aux vôtres." };
+  }
+  return null;
+}
 
 // ---------------- POST /admin/users/:id/timeout ----------------
 adminRoutes.post("/users/:id/timeout", requirePermission(PERMISSIONS.TIMEOUT_USER), async (c) => {
@@ -21,6 +35,8 @@ adminRoutes.post("/users/:id/timeout", requirePermission(PERMISSIONS.TIMEOUT_USE
 
   const target = await getUserById(c.env.DB, targetId);
   if (!target) return c.json({ error: "not_found", message: "Utilisateur introuvable." }, 404);
+  const denial = denyIfOutranked(c.get("user"), target);
+  if (denial) return c.json(denial, 403);
 
   const until = nowUnix() + durationSeconds;
   await c.env.DB.prepare("UPDATE users SET timeout_until = ?, ban_reason = ?, updated_at = ? WHERE id = ?")
@@ -38,6 +54,8 @@ adminRoutes.delete("/users/:id", requirePermission(PERMISSIONS.DELETE_ACCOUNT), 
   const targetId = c.req.param("id");
   const target = await getUserById(c.env.DB, targetId);
   if (!target) return c.json({ error: "not_found", message: "Utilisateur introuvable." }, 404);
+  const denial = denyIfOutranked(c.get("user"), target);
+  if (denial) return c.json(denial, 403);
 
   await c.env.DB.prepare("DELETE FROM users WHERE id = ?").bind(targetId).run();
   return c.json({ message: "Compte supprimé définitivement." });
@@ -51,6 +69,8 @@ adminRoutes.post("/users/:id/ban", requirePermission(PERMISSIONS.BAN_ACCOUNT), a
 
   const target = await getUserById(c.env.DB, targetId);
   if (!target) return c.json({ error: "not_found", message: "Utilisateur introuvable." }, 404);
+  const denial = denyIfOutranked(c.get("user"), target);
+  if (denial) return c.json(denial, 403);
 
   await c.env.DB.prepare("UPDATE users SET banned = 1, ban_reason = ?, updated_at = ? WHERE id = ?")
     .bind(reason, nowUnix(), targetId)
@@ -65,6 +85,8 @@ adminRoutes.post("/users/:id/unban", requirePermission(PERMISSIONS.BAN_ACCOUNT),
   const targetId = c.req.param("id");
   const target = await getUserById(c.env.DB, targetId);
   if (!target) return c.json({ error: "not_found", message: "Utilisateur introuvable." }, 404);
+  const denial = denyIfOutranked(c.get("user"), target);
+  if (denial) return c.json(denial, 403);
 
   await c.env.DB.prepare("UPDATE users SET banned = 0, ban_reason = NULL, updated_at = ? WHERE id = ?")
     .bind(nowUnix(), targetId)
@@ -110,6 +132,8 @@ adminRoutes.post(
     const targetId = c.req.param("id");
     const target = await getUserById(c.env.DB, targetId);
     if (!target) return c.json({ error: "not_found", message: "Utilisateur introuvable." }, 404);
+    const denial = denyIfOutranked(c.get("user"), target);
+    if (denial) return c.json(denial, 403);
 
     const tempPassword = generateRandomPassword();
     const hash = await hashPassword(tempPassword);
@@ -128,6 +152,72 @@ adminRoutes.post(
   }
 );
 
+// ---------------- POST /admin/users/:id/profile ----------------
+// Permet à un administrateur de corriger le pseudo/avatar d'un utilisateur
+// (modération de pseudo abusif, support...). Soumis à la même hiérarchie
+// anti-escalade que les autres actions admin.
+adminRoutes.post(
+  "/users/:id/profile",
+  requirePermission(PERMISSIONS.ADMIN_VIBRANET),
+  async (c) => {
+    const targetId = c.req.param("id");
+    const body = await c.req.json().catch(() => null);
+    const username = typeof body?.username === "string" ? body.username.trim() : undefined;
+    const avatarUrl =
+      body?.avatar_url === null ? null : typeof body?.avatar_url === "string" ? body.avatar_url.trim() : undefined;
+
+    if (username === undefined && avatarUrl === undefined) {
+      return c.json({ error: "bad_request", message: "Rien à mettre à jour (username et/ou avatar_url)." }, 400);
+    }
+
+    const target = await getUserById(c.env.DB, targetId);
+    if (!target) return c.json({ error: "not_found", message: "Utilisateur introuvable." }, 404);
+    const denial = denyIfOutranked(c.get("user"), target);
+    if (denial) return c.json(denial, 403);
+
+    let newUsername = target.username;
+    let newUsernameNormalized = target.username_normalized;
+    if (username !== undefined) {
+      if (!isValidUsername(username)) {
+        return c.json(
+          { error: "bad_request", message: "Nom d'utilisateur invalide (3 à 32 caractères : lettres, chiffres, _ ou -)." },
+          400
+        );
+      }
+      const normalized = normalizeUsername(username);
+      if (normalized !== target.username_normalized) {
+        const existing = await getUserByUsername(c.env.DB, normalized);
+        if (existing) return c.json({ error: "conflict", message: "Ce nom d'utilisateur est déjà pris." }, 409);
+      }
+      newUsername = username;
+      newUsernameNormalized = normalized;
+    }
+
+    let newAvatarUrl = target.avatar_url;
+    if (avatarUrl !== undefined) {
+      if (avatarUrl !== null && !isValidAvatarUrl(avatarUrl)) {
+        return c.json({ error: "bad_request", message: "URL d'avatar invalide (http/https, 2048 caractères max)." }, 400);
+      }
+      newAvatarUrl = avatarUrl;
+    }
+
+    try {
+      await c.env.DB.prepare(
+        "UPDATE users SET username = ?, username_normalized = ?, avatar_url = ?, updated_at = ? WHERE id = ?"
+      )
+        .bind(newUsername, newUsernameNormalized, newAvatarUrl, nowUnix(), targetId)
+        .run();
+    } catch (err: any) {
+      if (String(err?.message ?? "").includes("UNIQUE")) {
+        return c.json({ error: "conflict", message: "Ce nom d'utilisateur est déjà pris." }, 409);
+      }
+      throw err;
+    }
+
+    return c.json({ message: "Profil mis à jour.", username: newUsername, avatar_url: newAvatarUrl });
+  }
+);
+
 // ---------------- POST /admin/users/:id/oauth2 ----------------
 // Permet de forcer la désactivation de la 2FA d'un utilisateur (cas de
 // perte de l'appareil / support). L'activation forcée n'est pas possible
@@ -139,6 +229,8 @@ adminRoutes.post("/users/:id/oauth2", requirePermission(PERMISSIONS.MANAGE_OAUTH
 
   const target = await getUserById(c.env.DB, targetId);
   if (!target) return c.json({ error: "not_found", message: "Utilisateur introuvable." }, 404);
+  const denial = denyIfOutranked(c.get("user"), target);
+  if (denial) return c.json(denial, 403);
 
   if (enabled === false) {
     await c.env.DB.batch([
@@ -202,6 +294,22 @@ adminRoutes.post(
 
     const target = await getUserById(c.env.DB, targetId);
     if (!target) return c.json({ error: "not_found", message: "Utilisateur introuvable." }, 404);
+
+    const admin = c.get("user");
+    // On ne peut ni modifier un compte plus privilégié que soi, ni accorder
+    // un droit qu'on ne possède pas soi-même (empêche la self-escalade).
+    if (!actorOutranks(admin.permissions, target.permissions)) {
+      return c.json(
+        { error: "forbidden", message: "Vous ne pouvez pas modifier un compte ayant des permissions égales ou supérieures aux vôtres." },
+        403
+      );
+    }
+    if (!actorOutranks(admin.permissions, permissions)) {
+      return c.json(
+        { error: "forbidden", message: "Vous ne pouvez pas accorder une permission que vous ne possédez pas vous-même." },
+        403
+      );
+    }
 
     await c.env.DB.prepare("UPDATE users SET permissions = ?, updated_at = ? WHERE id = ?")
       .bind(permissions, nowUnix(), targetId)
