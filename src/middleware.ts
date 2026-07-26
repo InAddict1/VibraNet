@@ -25,14 +25,14 @@ export function setSessionCookie(c: Context<AppContext>, token: string, maxAgeSe
   setCookie(c, NET_TOKEN_COOKIE_NAME, token, {
     httpOnly: true,
     secure: true,
-    sameSite: "Lax",
+    sameSite: "None",
     path: "/",
     maxAge: maxAgeSeconds,
   });
 }
 
 export function clearSessionCookie(c: Context<AppContext>) {
-  deleteCookie(c, NET_TOKEN_COOKIE_NAME, { path: "/" });
+  deleteCookie(c, NET_TOKEN_COOKIE_NAME, { path: "/", secure: true, sameSite: "None" });
 }
 
 /**
