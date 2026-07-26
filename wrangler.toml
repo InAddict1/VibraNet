@@ -19,4 +19,8 @@ ALLOWED_ORIGIN = "https://vibranet.codeberg.page"
 [observability]
 enabled = true
 
-keep_vars = true
+[secrets]
+required = [
+  "JWT_SECRET",
+  "TOKEN_PEPPER"
+]
