@@ -109,17 +109,17 @@ export function toPublicUser(user: UserRow) {
 }
 
 /**
- * Vue "moi" : exactement ce que le profil connecté doit récupérer après
- * connexion — nom d'utilisateur, token de session, ID, e-mail, avatar.
- * Rien d'autre (pas de permissions, pas de statut 2FA/ban ici).
+ * Vue "moi" : nom d'utilisateur, ID, e-mail, avatar. Le token de session
+ * n'y figure pas : appeler cet endpoint nécessite déjà de le posséder
+ * (header net-token ou cookie), l'y renvoyer n'aurait aucune utilité.
+ * Rien d'autre non plus (pas de permissions, pas de statut 2FA/ban ici).
  */
-export function toMeView(user: UserRow, netToken: string | null) {
+export function toMeView(user: UserRow) {
   return {
     id: user.id,
     username: user.username,
     email: user.email,
     avatar_url: user.avatar_url,
-    ...(netToken !== null ? { net_token: netToken } : {}),
   };
 }
 
@@ -139,4 +139,4 @@ export function toAdminUserView(user: UserRow) {
     created_at: user.created_at,
     updated_at: user.updated_at,
   };
-}
+      }
