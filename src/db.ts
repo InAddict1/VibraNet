@@ -113,13 +113,13 @@ export function toPublicUser(user: UserRow) {
  * connexion — nom d'utilisateur, token de session, ID, e-mail, avatar.
  * Rien d'autre (pas de permissions, pas de statut 2FA/ban ici).
  */
-export function toMeView(user: UserRow, netToken: string) {
+export function toMeView(user: UserRow, netToken: string | null) {
   return {
     id: user.id,
     username: user.username,
     email: user.email,
     avatar_url: user.avatar_url,
-    net_token: netToken,
+    ...(netToken !== null ? { net_token: netToken } : {}),
   };
 }
 

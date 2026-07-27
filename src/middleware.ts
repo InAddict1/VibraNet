@@ -16,10 +16,25 @@ export const CSRF_HEADER_NAME = "x-vibranet-csrf";
 
 /**
  * Pose le net-token dans un cookie HttpOnly + Secure + SameSite.
- * HttpOnly empêche tout accès en JavaScript côté site (document.cookie ne
- * le montrera jamais), Secure impose HTTPS, SameSite=Lax bloque son envoi
- * sur des requêtes cross-site (donc la plupart des CSRF) tout en le laissant
- * fonctionner normalement pour votre propre front-end.
+ * - httpOnly : le JavaScript de la page ne peut jamais lire ce cookie
+ *   via `document.cookie` — un XSS sur le front-end ne peut donc pas
+ *   exfiltrer le token de session.
+ * - secure   : jamais envoyé en clair, uniquement en HTTPS.
+ * - sameSite="None" : le front-end (ex: vibranet.codeberg.page) et cette
+ *   API (workers.dev) sont sur des origines différentes. "Lax" ou "Strict"
+ *   empêcheraient le navigateur d'envoyer le cookie sur les requêtes fetch()
+ *   cross-origin vers l'API — "None" est donc nécessaire ici, et exige
+ *   obligatoirement `secure: true` (déjà le cas), sinon le navigateur rejette
+ *   silencieusement le cookie.
+ *   -> Si un jour le front-end est servi depuis le même domaine que l'API
+ *      (même origine), repasser à "Lax" est préférable (protection CSRF plus
+ *      forte). La protection anti-CSRF par header (voir requireSession
+ *      ci-dessous) reste de toute façon active dans les deux cas.
+ *
+ * Le CORS (index.ts) doit avoir credentials:true et une origine EXACTE
+ * (jamais "*"), et le front-end doit appeler fetch() avec
+ * `credentials: "include"` — sinon le navigateur ignore silencieusement
+ * le Set-Cookie de la réponse, cross-origin oblige.
  */
 export function setSessionCookie(c: Context<AppContext>, token: string, maxAgeSeconds: number) {
   setCookie(c, NET_TOKEN_COOKIE_NAME, token, {
