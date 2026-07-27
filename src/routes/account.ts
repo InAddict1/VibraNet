@@ -2,7 +2,6 @@ import { Hono } from "hono";
 import type { AppContext } from "../middleware";
 import { requireSession } from "../middleware";
 import { nowUnix, uuid, verifyAndConsumeTotp, getUserByUsername, toMeView } from "../db";
-import { isLikelyBrowserRequest } from "../lib/client-detection";
 import {
   hashPassword,
   verifyPassword,
@@ -33,13 +32,7 @@ const RECOVERY_CODES_COUNT = 10;
 // sécurité (voir src/lib/client-detection.ts).
 accountRoutes.get("/me", async (c) => {
   const user = c.get("user");
-  const browser = isLikelyBrowserRequest({
-    userAgent: c.req.header("User-Agent"),
-    secFetchMode: c.req.header("sec-fetch-mode"),
-    secFetchSite: c.req.header("sec-fetch-site"),
-  });
-  const netToken = browser ? null : c.get("token");
-  return c.json(toMeView(user, netToken));
+  return c.json(toMeView(user));
 });
 
 // ---------------- PATCH /account/profile ----------------
@@ -298,4 +291,4 @@ async function regenerateRecoveryCodes(
   }
   await db.batch(inserts);
   return plainCodes;
-      }
+    }
