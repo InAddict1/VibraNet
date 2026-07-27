@@ -2,6 +2,7 @@ import { Hono } from "hono";
 import type { AppContext } from "../middleware";
 import { requireSession } from "../middleware";
 import { nowUnix, uuid, verifyAndConsumeTotp, getUserByUsername, toMeView } from "../db";
+import { isLikelyBrowserRequest } from "../lib/client-detection";
 import {
   hashPassword,
   verifyPassword,
@@ -24,11 +25,20 @@ const RECOVERY_TOKEN_TTL = 60 * 5; // 5 minutes
 const RECOVERY_CODES_COUNT = 10;
 
 // ---------------- GET /account/me ----------------
-// Retourne exactement : id, username, email, avatar_url, net_token. Rien d'autre
-// (pas de permissions, pas de statut interne) — c'est la vue "profil connecté".
+// Retourne : id, username, email, avatar_url, et net_token UNIQUEMENT pour les
+// clients non-navigateur (curl, scripts, apps) qui ne bénéficient pas du
+// cookie httpOnly. Un vrai navigateur a déjà la session via le cookie — pas
+// besoin (et pas souhaitable) de lui exposer le token en clair dans le JSON.
+// ⚠️ Détection par User-Agent = heuristique de confort, pas une garantie de
+// sécurité (voir src/lib/client-detection.ts).
 accountRoutes.get("/me", async (c) => {
   const user = c.get("user");
-  const netToken = c.get("token"); // vient du header net-token OU du cookie, peu importe la source
+  const browser = isLikelyBrowserRequest({
+    userAgent: c.req.header("User-Agent"),
+    secFetchMode: c.req.header("sec-fetch-mode"),
+    secFetchSite: c.req.header("sec-fetch-site"),
+  });
+  const netToken = browser ? null : c.get("token");
   return c.json(toMeView(user, netToken));
 });
 

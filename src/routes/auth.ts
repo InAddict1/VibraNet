@@ -14,6 +14,7 @@ import {
   hashToken,
 } from "../lib/crypto";
 import { signShortLivedJwt, verifyShortLivedJwt } from "../lib/jwt";
+import { isLikelyBrowserRequest } from "../lib/client-detection";
 
 export const authRoutes = new Hono<AppContext>();
 
@@ -158,7 +159,16 @@ authRoutes.post("/login", async (c) => {
   // --- Pas de 2FA : session directe ---
   const netToken = await createSession(c, user.id, ip);
   setSessionCookie(c, netToken, SESSION_DURATION_SECONDS);
-  return c.json({ requires_2fa: false, net_token: netToken });
+  // Un navigateur a déjà le cookie httpOnly : inutile (et contre-productif niveau
+  // sécurité) de lui exposer aussi le token en clair dans le JSON. Les clients
+  // non-navigateur (curl, scripts, apps) qui ne bénéficient pas du cookie
+  // reçoivent le token pour pouvoir le réinjecter en header `net-token`.
+  const browser = isLikelyBrowserRequest({
+    userAgent: c.req.header("User-Agent"),
+    secFetchMode: c.req.header("sec-fetch-mode"),
+    secFetchSite: c.req.header("sec-fetch-site"),
+  });
+  return c.json({ requires_2fa: false, ...(browser ? {} : { net_token: netToken }) });
 });
 
 // ---------------- POST /auth/login/2fa ----------------
@@ -204,7 +214,12 @@ authRoutes.post("/login/2fa", async (c) => {
 
   const netToken = await createSession(c, user.id, ip);
   setSessionCookie(c, netToken, SESSION_DURATION_SECONDS);
-  return c.json({ net_token: netToken });
+  const browser = isLikelyBrowserRequest({
+    userAgent: c.req.header("User-Agent"),
+    secFetchMode: c.req.header("sec-fetch-mode"),
+    secFetchSite: c.req.header("sec-fetch-site"),
+  });
+  return c.json(browser ? {} : { net_token: netToken });
 });
 
 // ---------------- POST /auth/logout ----------------
